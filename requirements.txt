@@ -1,5 +1,5 @@
 streamlit
+nltk
+sklearn
 pdfplumber
 python-docx
-scikit-learn
-nltk
