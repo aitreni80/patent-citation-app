@@ -1,77 +1,93 @@
-import streamlit as st
-import fitz  # PyMuPDF
-import nltk
 import re
-from nltk.tokenize import word_tokenize
+import nltk
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import pdfplumber
+from docx import Document
 
-nltk.download("punkt")
-nltk.download("stopwords")
-nltk.download("averaged_perceptron_tagger")
-from nltk.corpus import stopwords
+# Download necessary NLTK data
+nltk.download('punkt')
 
-def extract_text_from_pdf(pdf_file):
-    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    return text
+# Extract text from PDFs
+def extract_text_from_pdf(uploaded_file):
+    with pdfplumber.open(uploaded_file) as pdf:
+        return "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
 
-def split_into_paragraphs(text):
-    paras = re.split(r"\n\s*\n|\[\d{4}\]", text)
-    return [p.strip() for p in paras if len(p.strip()) > 20]
+# Extract text from DOCX
+def extract_text_from_docx(uploaded_file):
+    doc = Document(uploaded_file)
+    return "\n".join([para.text for para in doc.paragraphs])
 
+# Extract claims from the claims document
 def extract_claims(text):
-    claims = re.split(r"(?<=\n)\d+\.\s", text)
-    return [c.strip() for c in claims if len(c.strip()) > 20]
+    claims = re.findall(r"(?i)claim\s*\d+.*?(?=claim\s*\d+|\Z)", text, re.DOTALL)
+    return claims if claims else [text]  # fallback if no regex match
 
-def extract_key_phrases(text):
-    stop_words = set(stopwords.words('english'))
-    words = word_tokenize(text)
-    tagged = nltk.pos_tag(words)
-    return [word for word, tag in tagged if tag.startswith("NN") and word.lower() not in stop_words and word.isalnum()]
+# Extract paragraphs from the reference document
+def extract_paragraphs(text):
+    # First check for paragraphs with tags like [0012]
+    tagged_paragraphs = re.findall(r"(\[\d{4}\].*?)(?=\[\d{4}\]|$)", text, re.DOTALL)
+    if tagged_paragraphs:
+        return [para.strip() for para in tagged_paragraphs]
+    
+    # If no tags found, fallback to splitting by blank lines
+    fallback_paragraphs = re.split(r'\n\s*\n', text)
+    return [p.strip() for p in fallback_paragraphs if len(p.strip()) > 50]
 
-def match_claims_to_reference(claims, ref_paras):
-    matches = []
-    for claim in claims:
-        claim_keywords = set(extract_key_phrases(claim))
-        para_scores = []
-        for para in ref_paras:
-            para_keywords = set(extract_key_phrases(para))
-            common = claim_keywords.intersection(para_keywords)
-            score = len(common) / len(claim_keywords) if claim_keywords else 0
-            para_scores.append((para, score))
-        top_matches = sorted(para_scores, key=lambda x: x[1], reverse=True)[:3]
-        matches.append([m for m in top_matches if m[1] > 0])
-    return matches
+# Rank reference paragraphs based on similarity to claim feature
+def rank_relevant_paragraphs(claim_feature, reference_paragraphs, top_k=3):
+    vectorizer = TfidfVectorizer().fit_transform([claim_feature] + reference_paragraphs)
+    cosine_matrix = cosine_similarity(vectorizer[0:1], vectorizer[1:])
+    top_indices = cosine_matrix[0].argsort()[-top_k:][::-1]
+    return [reference_paragraphs[i] for i in top_indices]
 
-def format_output(claims, matches):
-    output = ""
-    for i, (claim, refs) in enumerate(zip(claims, matches)):
-        output += f"\n**Claim {i+1}:**\n"
-        output += claim + "\n"
-        if refs:
-            for idx, (ref, score) in enumerate(refs):
-                output += f"\n> D1 para. (match {idx+1}, score={score:.2f}): {ref}\n"
-        else:
-            output += "\n> No relevant disclosure found in D1.\n"
-    return output
+# Generate citation for claims with reference to the matching paragraphs
+def generate_citations_for_claims(claims, reference_paragraphs):
+    results = {}
+    for i, claim in enumerate(claims, 1):
+        claim_features = re.split(r'\n|•', claim)
+        claim_results = []
+        for feature in claim_features:
+            feature = feature.strip()
+            if not feature:
+                continue
+            best_matches = rank_relevant_paragraphs(feature, reference_paragraphs)
+            claim_results.append((feature, best_matches))
+        results[f"Claim {i}"] = claim_results
+    return results
 
-st.title("Patent Claims Citation Matcher")
+# Streamlit app structure
+import streamlit as st
 
-claims_file = st.file_uploader("Upload Claims Document (PDF)", type="pdf")
-ref_file = st.file_uploader("Upload Reference Document (PDF)", type="pdf")
+st.title("Patent Claim Auto-Citation Generator")
 
-if claims_file and ref_file:
-    with st.spinner("Extracting and processing text..."):
-        claims_text = extract_text_from_pdf(claims_file)
-        ref_text = extract_text_from_pdf(ref_file)
+claims_file = st.file_uploader("Upload Claims Document (PDF/DOCX)", type=["pdf", "docx"])
+citation_file = st.file_uploader("Upload Reference Document (PDF/DOCX)", type=["pdf", "docx"])
 
-        claims = extract_claims(claims_text)
-        ref_paras = split_into_paragraphs(ref_text)
+if claims_file and citation_file:
+    # Extract claim text
+    claim_text = extract_text_from_pdf(claims_file) if claims_file.type == "application/pdf" else extract_text_from_docx(claims_file)
+    
+    # Extract reference/citation text
+    citation_text = extract_text_from_pdf(citation_file) if citation_file.type == "application/pdf" else extract_text_from_docx(citation_file)
 
-        matches = match_claims_to_reference(claims, ref_paras)
-        result = format_output(claims, matches)
+    claims = extract_claims(claim_text)
+    citation_paragraphs = extract_paragraphs(citation_text)
 
-    st.markdown(result)
+    st.success("Files uploaded and processed.")
+
+    citation_results = generate_citations_for_claims(claims, citation_paragraphs)
+
+    # Display results
+    for claim, features in citation_results.items():
+        st.markdown(f"### {claim}")
+        for feature, matches in features:
+            st.markdown(f"> **Feature**: {feature}")
+            for i, match in enumerate(matches, 1):
+                st.markdown(f"> **[{i}]** {match}")
+
+    st.download_button("Download Citation Mapping",
+        "\n\n".join(f"{k}:\n" + "\n".join([f"[{i+1}] {s}" for i, s in enumerate(v)]) 
+                      for k, v in citation_results.items()),
+        file_name="citation_mapping.txt"
+    )
