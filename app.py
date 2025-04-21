@@ -1,78 +1,87 @@
+# app.py
 import streamlit as st
-import fitz  # PyMuPDF
-import nltk
+import pdfplumber
 import re
-from nltk.corpus import stopwords
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import nltk
+from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.corpus import stopwords
+import string
+import os
 
 nltk.download("punkt")
 nltk.download("stopwords")
-nltk.download("averaged_perceptron_tagger")
-from nltk.corpus import stopwords
 
-def extract_text_from_pdf(pdf_file):
-    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    return text
+st.title("Patent Claim Citation Matcher")
 
-def split_into_paragraphs(text):
-    paras = re.split(r"\n\s*\n|\[\d{4}\]", text)
-    return [p.strip() for p in paras if len(p.strip()) > 20]
+# ---------------------- Helper Functions ----------------------
+def extract_text_from_pdf(uploaded_file):
+    with pdfplumber.open(uploaded_file) as pdf:
+        return "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
 
-def extract_claims(text):
-    claims = re.split(r"(?<=\n)\d+\.\s", text)
-    return [c.strip() for c in claims if len(c.strip()) > 20]
+def split_claims(text):
+    claims = re.split(r"(?<=\n)\s*(\d+\.)", text)
+    if len(claims) < 2:
+        # fallback to line spacing if no numbers
+        return [c.strip() for c in text.split("\n\n") if len(c.strip()) > 30]
+    grouped = []
+    i = 1
+    while i < len(claims):
+        number = claims[i]
+        content = claims[i + 1] if i + 1 < len(claims) else ""
+        grouped.append(content.strip())
+        i += 2
+    return grouped
+
+def split_paragraphs(text):
+    paras = re.split(r"\n\s*\n|\n(?=\[\d{4}\])", text)
+    return [p.strip() for p in paras if len(p.strip()) > 30]
 
 def extract_key_phrases(text):
-    # Simple tokenizer without nltk punkt
-    words = re.findall(r'\b\w+\b', text.lower())
     stop_words = set(stopwords.words("english"))
-    keywords = [w for w in words if w not in stop_words and len(w) > 2]
-    return keywords
+    words = word_tokenize(text.lower())
+    words = [w for w in words if w.isalnum() and w not in stop_words and len(w) > 2]
+    return words
 
-def match_claims_to_reference(claims, ref_paras):
+def match_features_to_reference(claim, reference_paragraphs, top_n=3):
+    features = [f.strip("-• ") for f in claim.split("\n") if len(f.strip()) > 10]
     matches = []
-    for claim in claims:
-        claim_keywords = set(extract_key_phrases(claim))
+    for feature in features:
+        keywords = extract_key_phrases(feature)
         para_scores = []
-        for para in ref_paras:
-            para_keywords = set(extract_key_phrases(para))
-            common = claim_keywords.intersection(para_keywords)
-            score = len(common) / len(claim_keywords) if claim_keywords else 0
-            para_scores.append((para, score))
-        top_matches = sorted(para_scores, key=lambda x: x[1], reverse=True)[:3]
-        matches.append([m for m in top_matches if m[1] > 0])
+        for i, para in enumerate(reference_paragraphs):
+            ref_keywords = extract_key_phrases(para)
+            overlap = set(keywords) & set(ref_keywords)
+            score = len(overlap) / (len(set(keywords)) + 1e-5)
+            if score > 0:
+                para_scores.append((i, para, score))
+        para_scores.sort(key=lambda x: x[2], reverse=True)
+        top_matches = para_scores[:top_n]
+        if top_matches:
+            matches.append((feature, top_matches))
     return matches
 
-def format_output(claims, matches):
-    output = ""
-    for i, (claim, refs) in enumerate(zip(claims, matches)):
-        output += f"\n**Claim {i+1}:**\n"
-        output += claim + "\n"
-        if refs:
-            for idx, (ref, score) in enumerate(refs):
-                output += f"\n> D1 para. (match {idx+1}, score={score:.2f}): {ref}\n"
-        else:
-            output += "\n> No relevant disclosure found in D1.\n"
-    return output
+# ---------------------- UI ----------------------
+claims_pdf = st.file_uploader("Upload Claims PDF", type="pdf")
+ref_pdf = st.file_uploader("Upload Reference PDF (e.g., D1)", type="pdf")
 
-st.title("Patent Claims Citation Matcher")
+document_label = st.text_input("Enter reference document label (e.g., D1)", "D1")
 
-claims_file = st.file_uploader("Upload Claims Document (PDF)", type="pdf")
-ref_file = st.file_uploader("Upload Reference Document (PDF)", type="pdf")
+if st.button("Match Claims") and claims_pdf and ref_pdf:
+    with st.spinner("Extracting and analyzing..."):
+        claims_text = extract_text_from_pdf(claims_pdf)
+        reference_text = extract_text_from_pdf(ref_pdf)
 
-if claims_file and ref_file:
-    with st.spinner("Extracting and processing text..."):
-        claims_text = extract_text_from_pdf(claims_file)
-        ref_text = extract_text_from_pdf(ref_file)
+        claims = split_claims(claims_text)
+        ref_paragraphs = split_paragraphs(reference_text)
 
-        claims = extract_claims(claims_text)
-        ref_paras = split_into_paragraphs(ref_text)
-
-        matches = match_claims_to_reference(claims, ref_paras)
-        result = format_output(claims, matches)
-
-    st.markdown(result)
+        for idx, claim in enumerate(claims, start=1):
+            st.subheader(f"Claim {idx}:")
+            st.markdown(f"> {claim}")
+            matched_features = match_features_to_reference(claim, ref_paragraphs)
+            for feature, top_matches in matched_features:
+                st.markdown(f"**• {feature}**")
+                for match_idx, para, score in top_matches:
+                    st.markdown(f"*{document_label} para. [{match_idx}]:* {para[:500]}...  ")
+            st.markdown("---")

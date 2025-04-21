@@ -1,4 +1,4 @@
 streamlit
-PyMuPDF
-nltk
+pdfplumber
 scikit-learn
+nltk
