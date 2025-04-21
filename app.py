@@ -2,11 +2,14 @@ import streamlit as st
 import fitz  # PyMuPDF
 import nltk
 import re
+from nltk.tokenize import word_tokenize
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 nltk.download("punkt")
-from nltk.tokenize import sent_tokenize
+nltk.download("stopwords")
+nltk.download("averaged_perceptron_tagger")
+from nltk.corpus import stopwords
 
 def extract_text_from_pdf(pdf_file):
     doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
@@ -23,17 +26,24 @@ def extract_claims(text):
     claims = re.split(r"(?<=\n)\d+\.\s", text)
     return [c.strip() for c in claims if len(c.strip()) > 20]
 
-def match_claims_to_reference(claims, ref_paras):
-    vectorizer = TfidfVectorizer().fit(claims + ref_paras)
-    claim_vectors = vectorizer.transform(claims)
-    ref_vectors = vectorizer.transform(ref_paras)
+def extract_key_phrases(text):
+    stop_words = set(stopwords.words('english'))
+    words = word_tokenize(text)
+    tagged = nltk.pos_tag(words)
+    return [word for word, tag in tagged if tag.startswith("NN") and word.lower() not in stop_words and word.isalnum()]
 
+def match_claims_to_reference(claims, ref_paras):
     matches = []
-    for i, c_vec in enumerate(claim_vectors):
-        sims = cosine_similarity(c_vec, ref_vectors).flatten()
-        top_indices = sims.argsort()[-3:][::-1]
-        matched_paras = [(ref_paras[j], sims[j]) for j in top_indices if sims[j] > 0.1]
-        matches.append(matched_paras)
+    for claim in claims:
+        claim_keywords = set(extract_key_phrases(claim))
+        para_scores = []
+        for para in ref_paras:
+            para_keywords = set(extract_key_phrases(para))
+            common = claim_keywords.intersection(para_keywords)
+            score = len(common) / len(claim_keywords) if claim_keywords else 0
+            para_scores.append((para, score))
+        top_matches = sorted(para_scores, key=lambda x: x[1], reverse=True)[:3]
+        matches.append([m for m in top_matches if m[1] > 0])
     return matches
 
 def format_output(claims, matches):
