@@ -1,11 +1,9 @@
-import streamlit as st
-import pdfplumber
-from docx import Document
-import nltk
 import re
+import nltk
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from nltk.tokenize import sent_tokenize
+import pdfplumber
+from docx import Document
 
 # Download necessary NLTK data
 nltk.download('punkt')
