@@ -2,7 +2,7 @@ import streamlit as st
 import fitz  # PyMuPDF
 import nltk
 import re
-from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -27,10 +27,11 @@ def extract_claims(text):
     return [c.strip() for c in claims if len(c.strip()) > 20]
 
 def extract_key_phrases(text):
-    stop_words = set(stopwords.words('english'))
-    words = word_tokenize(text)
-    tagged = nltk.pos_tag(words)
-    return [word for word, tag in tagged if tag.startswith("NN") and word.lower() not in stop_words and word.isalnum()]
+    # Simple tokenizer without nltk punkt
+    words = re.findall(r'\b\w+\b', text.lower())
+    stop_words = set(stopwords.words("english"))
+    keywords = [w for w in words if w not in stop_words and len(w) > 2]
+    return keywords
 
 def match_claims_to_reference(claims, ref_paras):
     matches = []
