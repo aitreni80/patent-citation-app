@@ -4,8 +4,9 @@ import spacy
 import re
 from typing import List, Dict
 
-# Load spaCy model
-nlp = spacy.load("en_core_web_sm")
+# Use a lightweight blank English model to avoid needing downloads
+nlp = spacy.blank("en")
+nlp.add_pipe("sentencizer")  # add sentence boundary detection
 
 st.set_page_config(layout="wide")
 st.title("Patent Claim Matcher")
@@ -34,7 +35,7 @@ def extract_features(claim_text: str) -> List[str]:
 
 def extract_key_phrases(text: str) -> List[str]:
     doc = nlp(text.lower())
-    return [chunk.text for chunk in doc.noun_chunks]
+    return [token.text for token in doc if token.is_alpha and not token.is_stop]
 
 def match_features_to_reference(claim: str, reference_paragraphs: List[str]) -> List[Dict]:
     features = extract_features(claim)
