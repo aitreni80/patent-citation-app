@@ -1,4 +1,3 @@
 streamlit
 pdfplumber
-scikit-learn
-nltk
+spacy
