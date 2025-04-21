@@ -1,5 +1,5 @@
-streamlit
-nltk
-sklearn
-pdfplumber
-python-docx
+streamlit==1.32.2
+nltk==3.8.1
+scikit-learn==1.4.1.post1
+pdfplumber==0.10.3
+python-docx==1.1.0
