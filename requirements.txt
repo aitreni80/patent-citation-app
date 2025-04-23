@@ -1,3 +1,4 @@
 streamlit
-pdfplumber
-spacy
+PyMuPDF==1.23.9
+sentence-transformers
+torch
