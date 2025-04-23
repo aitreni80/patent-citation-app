@@ -1,77 +1,50 @@
 import streamlit as st
 import fitz  # PyMuPDF
-import nltk
-import re
-from nltk.tokenize import word_tokenize
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer, util
 
-nltk.download("punkt")
-nltk.download("stopwords")
-nltk.download("averaged_perceptron_tagger")
-from nltk.corpus import stopwords
+st.set_page_config(page_title="Patent Claim Matcher", layout="wide")
+st.title("Patent Claim Feature Matcher")
 
-def extract_text_from_pdf(pdf_file):
-    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
+model = SentenceTransformer("all-MiniLM-L6-v2")
+
+def extract_paragraphs_from_pdf(pdf_file):
     text = ""
+    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
     for page in doc:
         text += page.get_text()
-    return text
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    return paragraphs
 
-def split_into_paragraphs(text):
-    paras = re.split(r"\n\s*\n|\[\d{4}\]", text)
-    return [p.strip() for p in paras if len(p.strip()) > 20]
+def extract_features(claim_text):
+    # Very simple feature splitter: each line or semicolon could be a feature
+    features = [f.strip("•; \n") for f in claim_text.splitlines() if f.strip()]
+    return features
 
-def extract_claims(text):
-    claims = re.split(r"(?<=\n)\d+\.\s", text)
-    return [c.strip() for c in claims if len(c.strip()) > 20]
+def match_features_to_reference(features, reference_paragraphs):
+    ref_embeddings = model.encode(reference_paragraphs, convert_to_tensor=True)
+    results = []
+    for feature in features:
+        feature_embedding = model.encode(feature, convert_to_tensor=True)
+        cosine_scores = util.cos_sim(feature_embedding, ref_embeddings)[0]
+        best_match_idx = int(cosine_scores.argmax())
+        best_score = float(cosine_scores[best_match_idx])
+        results.append((feature, reference_paragraphs[best_match_idx], best_score))
+    return results
 
-def extract_key_phrases(text):
-    stop_words = set(stopwords.words('english'))
-    words = word_tokenize(text)
-    tagged = nltk.pos_tag(words)
-    return [word for word, tag in tagged if tag.startswith("NN") and word.lower() not in stop_words and word.isalnum()]
+# --- Streamlit UI ---
+claim_text = st.text_area("Paste a single claim below:", height=250)
 
-def match_claims_to_reference(claims, ref_paras):
-    matches = []
-    for claim in claims:
-        claim_keywords = set(extract_key_phrases(claim))
-        para_scores = []
-        for para in ref_paras:
-            para_keywords = set(extract_key_phrases(para))
-            common = claim_keywords.intersection(para_keywords)
-            score = len(common) / len(claim_keywords) if claim_keywords else 0
-            para_scores.append((para, score))
-        top_matches = sorted(para_scores, key=lambda x: x[1], reverse=True)[:3]
-        matches.append([m for m in top_matches if m[1] > 0])
-    return matches
+ref_file = st.file_uploader("Upload reference PDF", type=["pdf"])
 
-def format_output(claims, matches):
-    output = ""
-    for i, (claim, refs) in enumerate(zip(claims, matches)):
-        output += f"\n**Claim {i+1}:**\n"
-        output += claim + "\n"
-        if refs:
-            for idx, (ref, score) in enumerate(refs):
-                output += f"\n> D1 para. (match {idx+1}, score={score:.2f}): {ref}\n"
-        else:
-            output += "\n> No relevant disclosure found in D1.\n"
-    return output
+if st.button("Match Features") and claim_text and ref_file:
+    with st.spinner("Processing..."):
+        reference_paragraphs = extract_paragraphs_from_pdf(ref_file)
+        features = extract_features(claim_text)
+        matches = match_features_to_reference(features, reference_paragraphs)
 
-st.title("Patent Claims Citation Matcher")
-
-claims_file = st.file_uploader("Upload Claims Document (PDF)", type="pdf")
-ref_file = st.file_uploader("Upload Reference Document (PDF)", type="pdf")
-
-if claims_file and ref_file:
-    with st.spinner("Extracting and processing text..."):
-        claims_text = extract_text_from_pdf(claims_file)
-        ref_text = extract_text_from_pdf(ref_file)
-
-        claims = extract_claims(claims_text)
-        ref_paras = split_into_paragraphs(ref_text)
-
-        matches = match_claims_to_reference(claims, ref_paras)
-        result = format_output(claims, matches)
-
-    st.markdown(result)
+    st.subheader("Matched Features with Citations")
+    for idx, (feature, para, score) in enumerate(matches, start=1):
+        st.markdown(f"**Feature {idx}:** {feature}")
+        st.markdown(f"*Matched Paragraph (Score: {score:.2f}):*")
+        st.code(para)
+        st.markdown("---")
