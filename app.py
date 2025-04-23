@@ -1,50 +1,64 @@
-import streamlit as st
-import fitz  # PyMuPDF
-from sentence_transformers import SentenceTransformer, util
+from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+import numpy as np
 
-st.set_page_config(page_title="Patent Claim Matcher", layout="wide")
-st.title("Patent Claim Feature Matcher")
-
+# Load model
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-def extract_paragraphs_from_pdf(pdf_file):
-    text = ""
-    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-    for page in doc:
-        text += page.get_text()
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    return paragraphs
-
-def extract_features(claim_text):
-    # Very simple feature splitter: each line or semicolon could be a feature
-    features = [f.strip("•; \n") for f in claim_text.splitlines() if f.strip()]
+# Step 1: Split claim into features
+def split_claim_into_features(claim_text):
+    features = []
+    # Naive split: by semicolon or 'and' with some preprocessing
+    for part in claim_text.split(";"):
+        part = part.strip()
+        if len(part) > 30:  # Filter out short irrelevant chunks
+            features.append(part)
     return features
 
-def match_features_to_reference(features, reference_paragraphs):
-    ref_embeddings = model.encode(reference_paragraphs, convert_to_tensor=True)
+# Step 2: Embed features and reference paragraphs
+def embed_text_chunks(text_chunks):
+    return model.encode(text_chunks, convert_to_tensor=True)
+
+# Step 3: Match each feature to best paragraph(s)
+def match_features_to_reference(features, reference_paragraphs, top_k=1, score_threshold=0.5):
+    features_emb = embed_text_chunks(features)
+    reference_emb = embed_text_chunks(reference_paragraphs)
+
     results = []
-    for feature in features:
-        feature_embedding = model.encode(feature, convert_to_tensor=True)
-        cosine_scores = util.cos_sim(feature_embedding, ref_embeddings)[0]
-        best_match_idx = int(cosine_scores.argmax())
-        best_score = float(cosine_scores[best_match_idx])
-        results.append((feature, reference_paragraphs[best_match_idx], best_score))
+    for idx, feat_emb in enumerate(features_emb):
+        scores = cosine_similarity([feat_emb.cpu().numpy()], reference_emb.cpu().numpy())[0]
+        top_indices = np.argsort(scores)[::-1][:top_k]
+
+        matches = []
+        for i in top_indices:
+            score = scores[i]
+            if score >= score_threshold:
+                matches.append({
+                    "score": float(score),
+                    "paragraph": reference_paragraphs[i]
+                })
+        results.append({
+            "feature": features[idx],
+            "matches": matches
+        })
     return results
 
-# --- Streamlit UI ---
-claim_text = st.text_area("Paste a single claim below:", height=250)
+# Example usage
+claim_text = """
+An environmental impact management device comprising: an emission right acquiring unit to acquire emission right data indicating a right to emit a predetermined amount of chemical substance; a load acquiring unit to acquire manufacture load data indicating an amount of the chemical substance emitted by manufacture of an article; and a use fee calculating unit to calculate a use fee of the article on the basis of a price of the emission right data and the amount of the chemical substance emitted by manufacture of the article.
+"""
 
-ref_file = st.file_uploader("Upload reference PDF", type=["pdf"])
+reference_paragraphs = [  # Each para should be a separate clean paragraph
+    "Processes for determining carbon dioxide emission impact. In one process, a carbon dioxide emission impact is determined for each stage of a multi-stage trip...",
+    "[0006] Therefore, there is a need for new processes for understanding the carbon impact of a vehicle over its entire lifetime...",
+    # Add more paragraphs here
+]
 
-if st.button("Match Features") and claim_text and ref_file:
-    with st.spinner("Processing..."):
-        reference_paragraphs = extract_paragraphs_from_pdf(ref_file)
-        features = extract_features(claim_text)
-        matches = match_features_to_reference(features, reference_paragraphs)
+features = split_claim_into_features(claim_text)
+matches = match_features_to_reference(features, reference_paragraphs, top_k=1, score_threshold=0.4)
 
-    st.subheader("Matched Features with Citations")
-    for idx, (feature, para, score) in enumerate(matches, start=1):
-        st.markdown(f"**Feature {idx}:** {feature}")
-        st.markdown(f"*Matched Paragraph (Score: {score:.2f}):*")
-        st.code(para)
-        st.markdown("---")
+# Display results
+for match in matches:
+    print(f"\nFeature: {match['feature']}")
+    for m in match["matches"]:
+        print(f"  Matched Paragraph (Score: {m['score']:.2f}): {m['paragraph'][:200]}...")
